@@ -18,6 +18,7 @@ package deployment
 
 import (
 	"context"
+	"errors"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,7 +30,9 @@ import (
 )
 
 var (
-	gvk = appsv1.SchemeGroupVersion.WithKind("Deployment")
+	deploymentGVK   = appsv1.SchemeGroupVersion.WithKind("Deployment")
+	colocationLabel = "kueue.x-k8s.io/multikueue-colocation"
+	errNotManaged   = errors.New("deployment is not managed by MultiKueue colocation")
 )
 
 const (
@@ -38,13 +41,14 @@ const (
 
 func init() {
 	utilruntime.Must(jobframework.RegisterIntegration(FrameworkName, jobframework.IntegrationCallbacks{
-		SetupIndexes:   SetupIndexes,
-		NewReconciler:  jobframework.NewNoopReconcilerFactory(gvk),
-		GVK:            gvk,
-		SetupWebhook:   SetupWebhook,
-		JobType:        &appsv1.Deployment{},
-		AddToScheme:    appsv1.AddToScheme,
-		DependencyList: []string{"pod"},
+		SetupIndexes:      SetupIndexes,
+		NewReconciler:     jobframework.NewNoopReconcilerFactory(deploymentGVK),
+		GVK:               deploymentGVK,
+		SetupWebhook:      SetupWebhook,
+		JobType:           &appsv1.Deployment{},
+		AddToScheme:       appsv1.AddToScheme,
+		DependencyList:    []string{"pod"},
+		MultiKueueAdapter: &deploymentAdapter{},
 	}))
 }
 
@@ -62,7 +66,7 @@ func (d *Deployment) Object() client.Object {
 }
 
 func (d *Deployment) GVK() schema.GroupVersionKind {
-	return gvk
+	return deploymentGVK
 }
 
 func SetupIndexes(context.Context, client.FieldIndexer) error {

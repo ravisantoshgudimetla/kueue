@@ -142,6 +142,59 @@ func TestDefault(t *testing.T) {
 				PodTemplateSpecLabel(constants.WorkloadPriorityClassLabel, "test").
 				Obj(),
 		},
+		"deployment without colocation label": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").Obj(),
+			want:       testingdeployment.MakeDeployment("test-pod", "").Obj(),
+		},
+		"deployment with colocation label": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Obj(),
+			want: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				PodTemplateAnnotation(podconstants.SuspendedByParentAnnotation, FrameworkName).
+				Obj(),
+		},
+		"deployment with colocation label and queue": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("test-queue").
+				Obj(),
+			want: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("test-queue").
+				PodTemplateSpecQueue("test-queue").
+				Paused(true).
+				PodTemplateAnnotation(podconstants.SuspendedByParentAnnotation, FrameworkName).
+				Obj(),
+		},
+		"deployment with colocation label and custom replicas": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Replicas(3).
+				Obj(),
+			want: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Replicas(3).
+				Paused(true).
+				PodTemplateAnnotation(podconstants.SuspendedByParentAnnotation, FrameworkName).
+				Obj(),
+		},
+		"LocalQueueDefaulting enabled, default lq is created, deployment with colocation": {
+			localQueueDefaulting: true,
+			defaultLqExist:       true,
+			deployment: testingdeployment.MakeDeployment("test-pod", "default").
+				Label(colocationLabel, "true").
+				Obj(),
+			want: testingdeployment.MakeDeployment("test-pod", "default").
+				Label(colocationLabel, "true").
+				Queue("default").
+				PodTemplateSpecQueue("default").
+				Paused(true).
+				PodTemplateAnnotation(podconstants.SuspendedByParentAnnotation, FrameworkName).
+				Obj(),
+		},
 	}
 
 	for name, tc := range testCases {
@@ -181,15 +234,15 @@ func TestValidateCreate(t *testing.T) {
 		wantErr    error
 		wantWarns  admission.Warnings
 	}{
-		"without queue": {
+		"without colocation label": {
 			deployment: testingdeployment.MakeDeployment("test-pod", "").Obj(),
 		},
-		"valid queue name": {
+		"valid queue name without colocation": {
 			deployment: testingdeployment.MakeDeployment("test-pod", "").
 				Queue("test-queue").
 				Obj(),
 		},
-		"invalid queue name": {
+		"invalid queue name without colocation": {
 			deployment: testingdeployment.MakeDeployment("test-pod", "").
 				Queue("test/queue").
 				Obj(),
@@ -199,6 +252,41 @@ func TestValidateCreate(t *testing.T) {
 					Field: "metadata.labels[kueue.x-k8s.io/queue-name]",
 				},
 			}.ToAggregate(),
+		},
+		"deployment with colocation label but missing queue": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeRequired,
+					Field: "metadata.labels[kueue.x-k8s.io/queue-name]",
+				},
+			}.ToAggregate(),
+		},
+		"deployment with colocation label and invalid queue": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("test/queue").
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:   field.ErrorTypeInvalid,
+					Field:  "metadata.labels[kueue.x-k8s.io/queue-name]",
+					Detail: "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character",
+				},
+			}.ToAggregate(),
+		},
+		"valid deployment with colocation label": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("test-queue").
+				PriorityClassName("high-priority").
+				Obj(),
+		},
+		"without colocation or queue name": {
+			deployment: testingdeployment.MakeDeployment("test-pod", "").
+				Obj(),
 		},
 	}
 
@@ -304,6 +392,121 @@ func TestValidateUpdate(t *testing.T) {
 				&field.Error{
 					Type:  field.ErrorTypeInvalid,
 					Field: "metadata.labels[kueue.x-k8s.io/priority-class]",
+				},
+			}.ToAggregate(),
+		},
+		"with colocation (no changes)": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+		},
+		"attempt to unpause deployment with colocation": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(false).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeInvalid,
+					Field: "spec.paused",
+				},
+			}.ToAggregate(),
+		},
+		"scaling deployment with colocation": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Replicas(1).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Replicas(2).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeInvalid,
+					Field: "spec.replicas",
+				},
+			}.ToAggregate(),
+		},
+		"removing colocation label": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Paused(true).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeInvalid,
+					Field: "metadata.labels[kueue.x-k8s.io/multikueue-colocation]",
+				},
+			}.ToAggregate(),
+		},
+		"modifying colocation label value": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "false").
+				Paused(true).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeInvalid,
+					Field: "metadata.labels[kueue.x-k8s.io/multikueue-colocation]",
+				},
+			}.ToAggregate(),
+		},
+		"update queue name with colocation": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("test-queue").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Queue("new-queue").
+				Paused(true).
+				Obj(),
+		},
+		"with colocation and queue name (no changes)": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "test-queue").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "test-queue").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+		},
+		"attempt to remove queue name from colocated deployment": {
+			oldDeployment: testingdeployment.MakeDeployment("test-pod", "test-queue").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Queue("test-queue").
+				Obj(),
+			newDeployment: testingdeployment.MakeDeployment("test-pod", "").
+				Label(colocationLabel, "true").
+				Paused(true).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:   field.ErrorTypeInvalid,
+					Field:  "metadata.labels[kueue.x-k8s.io/queue-name]",
+					Detail: "deployments with colocation label must specify a queue name",
 				},
 			}.ToAggregate(),
 		},

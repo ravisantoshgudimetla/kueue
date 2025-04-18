@@ -34,7 +34,8 @@ import (
 )
 
 func ApplyDefaultForSuspend(ctx context.Context, job GenericJob, k8sClient client.Client,
-	manageJobsWithoutQueueName bool, managedJobsNamespaceSelector labels.Selector) error {
+	manageJobsWithoutQueueName bool, managedJobsNamespaceSelector labels.Selector,
+) error {
 	suspend, err := WorkloadShouldBeSuspended(ctx, job.Object(), k8sClient, manageJobsWithoutQueueName, managedJobsNamespaceSelector)
 	if err != nil {
 		return err
@@ -48,10 +49,19 @@ func ApplyDefaultForSuspend(ctx context.Context, job GenericJob, k8sClient clien
 // WorkloadShouldBeSuspended determines whether jobObj should be default suspended on creation
 func WorkloadShouldBeSuspended(ctx context.Context, jobObj client.Object, k8sClient client.Client,
 	manageJobsWithoutQueueName bool, managedJobsNamespaceSelector labels.Selector) (bool, error) {
-	// Do not default suspend a job whose ancestor is already managed by Kueue
-	ancestorJob, err := FindAncestorJobManagedByKueue(ctx, k8sClient, jobObj, manageJobsWithoutQueueName)
-	if err != nil || ancestorJob != nil {
-		return false, err
+	// Do not default suspend a job whose owner is already managed by Kueue
+	if IsOwnerManagedByKueueForObject(jobObj) {
+		return false, nil
+	}
+
+	// Jobs with queue names whose parents are not managed by Kueue are default suspended
+	if QueueNameForObject(jobObj) != "" {
+		return true, nil
+	}
+
+	// Jobs with colocation label should be suspended
+	if val, exists := jobObj.GetLabels()["kueue.x-k8s.io/multikueue-colocation"]; exists && val == "true" {
+		return true, nil
 	}
 
 	// Jobs with queue names whose parents are not managed by Kueue are default suspended

@@ -178,3 +178,34 @@ func (d *DeploymentWrapper) SetTypeMeta() *DeploymentWrapper {
 	d.Kind = "Deployment"
 	return d
 }
+
+// Paused sets the paused field of the Deployment
+func (d *DeploymentWrapper) Paused(paused bool) *DeploymentWrapper {
+	d.Spec.Paused = paused
+	return d
+}
+
+// PriorityClassName sets the priority class name of the pod template spec
+func (d *DeploymentWrapper) PriorityClassName(name string) *DeploymentWrapper {
+	d.Spec.Template.Spec.PriorityClassName = name
+	return d
+}
+
+// ClearLabels removes all labels from the Deployment
+func (d *DeploymentWrapper) ClearLabels() *DeploymentWrapper {
+	d.Labels = nil
+	return d
+}
+
+// SetStatus sets the status of the Deployment
+func (d *DeploymentWrapper) SetStatus(status appsv1.DeploymentStatus) *DeploymentWrapper {
+	d.Deployment.Status = status
+	return d
+}
+
+// DeepCopy returns a deep copy of the DeploymentWrapper
+func (d *DeploymentWrapper) DeepCopy() *DeploymentWrapper {
+	return &DeploymentWrapper{
+		Deployment: *d.Deployment.DeepCopy(),
+	}
+}

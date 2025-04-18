@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/queue"
 )
 
+// Webhook implements admission.CustomDefaulter and admission.CustomValidator for Deployment objects.
 type Webhook struct {
 	client                       client.Client
 	manageJobsWithoutQueueName   bool
@@ -63,6 +64,7 @@ func SetupWebhook(mgr ctrl.Manager, opts ...jobframework.Option) error {
 
 var _ admission.CustomDefaulter = &Webhook{}
 
+// Default implements admission.CustomDefaulter.
 func (wh *Webhook) Default(ctx context.Context, obj runtime.Object) error {
 	deployment := fromObject(obj)
 
@@ -90,22 +92,31 @@ func (wh *Webhook) Default(ctx context.Context, obj runtime.Object) error {
 		if priorityClass := jobframework.WorkloadPriorityClassName(deployment.Object()); priorityClass != "" {
 			deployment.Spec.Template.Labels[controllerconstants.WorkloadPriorityClassLabel] = priorityClass
 		}
+		// If this is a colocated deployment, ensure it's paused
+		if deployment.Labels[colocationLabel] == "true" {
+			deployment.Spec.Paused = true
+		}
 	}
-
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-apps-v1-deployment,mutating=false,failurePolicy=fail,sideEffects=None,groups="apps",resources=deployments,verbs=create;update,versions=v1,name=vdeployment.kb.io,admissionReviewVersions=v1
-
-var _ admission.CustomValidator = &Webhook{}
-
+// ValidateCreate implements admission.CustomValidator.
 func (wh *Webhook) ValidateCreate(ctx context.Context, obj runtime.Object) (warnings admission.Warnings, err error) {
 	deployment := fromObject(obj)
 
 	log := ctrl.LoggerFrom(ctx).WithName("deployment-webhook")
 	log.V(5).Info("Validating create")
 
-	allErrs := jobframework.ValidateQueueName(deployment.Object())
+	var allErrs field.ErrorList
+	if hasColocationLabel(deployment) {
+		if _, exists := deployment.GetLabels()[constants.QueueLabel]; !exists {
+			allErrs = append(allErrs, field.Required(field.NewPath("metadata").Child("labels").Key(constants.QueueLabel),
+				"deployments with colocation label must specify a queue name"))
+		}
+	}
+
+	// Validate queue name format if it exists
+	allErrs = append(allErrs, jobframework.ValidateQueueName(deployment.Object())...)
 
 	return nil, allErrs.ToAggregate()
 }
@@ -115,6 +126,7 @@ var (
 	queueNameLabelPath = labelsPath.Key(controllerconstants.QueueLabel)
 )
 
+// ValidateUpdate implements webhook.Validator.
 func (wh *Webhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (warnings admission.Warnings, err error) {
 	oldDeployment := fromObject(oldObj)
 	newDeployment := fromObject(newObj)
@@ -134,9 +146,37 @@ func (wh *Webhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Ob
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(oldQueueName, newQueueName, queueNameLabelPath)...)
 	}
 
+	// Handle deployments with colocation label
+	if oldDeployment.Labels[colocationLabel] == "true" {
+		allErrs = append(allErrs, validateUpdateForColocatedDeployments(oldDeployment, newDeployment)...)
+	}
 	return warnings, allErrs.ToAggregate()
 }
 
-func (wh *Webhook) ValidateDelete(context.Context, runtime.Object) (warnings admission.Warnings, err error) {
+func validateUpdateForColocatedDeployments(oldDeployment, newDeployment *Deployment) field.ErrorList {
+	allErrs := field.ErrorList{}
+	// Prevent removing the colocation label
+	if oldDeployment.Labels[colocationLabel] == "true" && newDeployment.Labels[colocationLabel] != "true" {
+		return apivalidation.ValidateImmutableField(oldDeployment.Labels[colocationLabel], newDeployment.Labels[colocationLabel], labelsPath.Key(colocationLabel))
+	}
+	// Prevent scaling operations for deployments managed by MultiKueue
+	if oldDeployment.Spec.Replicas != nil && newDeployment.Spec.Replicas != nil &&
+		*oldDeployment.Spec.Replicas != *newDeployment.Spec.Replicas {
+		return apivalidation.ValidateImmutableField(*oldDeployment.Spec.Replicas, *newDeployment.Spec.Replicas, field.NewPath("spec", "replicas"))
+	}
+	// Prevent unpausing the deployment
+	if oldDeployment.Spec.Paused && !newDeployment.Spec.Paused {
+		return apivalidation.ValidateImmutableField(oldDeployment.Spec.Paused, newDeployment.Spec.Paused, field.NewPath("spec", "paused"))
+	}
+	return allErrs
+}
+
+// ValidateDelete implements webhook.Validator.
+func (wh *Webhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	return nil, nil
+}
+
+func hasColocationLabel(deployment *Deployment) bool {
+	val, exists := deployment.Labels[colocationLabel]
+	return exists && val == "true"
 }
